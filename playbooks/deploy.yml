@@ -1,0 +1,111 @@
+---
+
+- name: AI Infrastructure Auto Updater
+  hosts: ai_servers
+  gather_facts: false
+
+  tasks:
+
+    - name: Check Current AI Service Health
+      command:
+        cmd: python3 ../scripts/health_check.py
+      register: initial_health
+      changed_when: false
+      failed_when: false
+
+    - name: Display Current Health
+      debug:
+        msg: "{{ initial_health.stdout }}"
+
+    - name: Stop deployment if current service is unhealthy
+      fail:
+        msg: "Current AI service is unhealthy. Deployment stopped before upgrade."
+      when: initial_health.rc != 0
+
+    - name: Check for latest approved AI Model
+      command:
+        cmd: python3 ../scripts/model_checker.py
+      register: model_checker
+      changed_when: false
+
+    - name: Parse model checker result
+      set_fact:
+        model_info: "{{ model_checker.stdout | from_json }}"
+
+    - name: Display Current Model
+      debug:
+        msg: "Current Model: {{ model_info.current_model }}"
+
+    - name: Backup AI Configuration
+      copy:
+        src: ../config/app_config.yml
+        dest: "../config/backups/app_config_{{ model_info.current_model }}.yml.bak"
+      when: model_info.update_available
+
+    - name: Replace AI model
+      ansible.builtin.replace:
+        path: ../config/app_config.yml
+        regexp: "^model:.*$"
+        replace: "model: {{ model_info.latest_model }}"
+      when: model_info.update_available
+      notify: Restart AI Service
+
+    - name: Apply restart before health check
+      meta: flush_handlers
+
+    - name: Check AI Service Health After Upgrade
+      command:
+        cmd: python3 ../scripts/health_check.py
+      register: health_check
+      changed_when: false
+      failed_when: false
+
+    - name: Display Health Status
+      debug:
+        msg: "{{ health_check.stdout }}"
+
+    - name: Rollback configuration after failed upgrade
+      copy:
+        src: "../config/backups/app_config_{{ model_info.current_model }}.yml.bak"
+        dest: "../config/app_config.yml"
+      when:
+        - model_info.update_available
+        - health_check.rc != 0
+      notify: Restart AI Service
+
+    - name: Apply rollback restart
+      meta: flush_handlers
+      when:
+        - model_info.update_available
+        - health_check.rc != 0
+
+    - name: Verify service after rollback
+      command:
+        cmd: python3 ../scripts/health_check.py
+      register: rollback_health
+      changed_when: false
+      failed_when: false
+      when:
+        - model_info.update_available
+        - health_check.rc != 0
+
+    - name: Display Rollback Health
+      debug:
+        msg: "{{ rollback_health.stdout }}"
+      when:
+        - model_info.update_available
+        - health_check.rc != 0
+
+    - name: Fail deployment if rollback also failed
+      fail:
+        msg: "Upgrade failed and rollback health check also failed!"
+      when:
+        - model_info.update_available
+        - health_check.rc != 0
+        - rollback_health.rc != 0
+
+  handlers:
+
+    - name: Restart AI Service
+      debug:
+        msg: "AI Service Restarted with New model!"
