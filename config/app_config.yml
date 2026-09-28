@@ -1,4 +1,4 @@
-model: gpt-5.5
+model: openai/gpt-oss-20b
 temperature: 0.7
-gpu: true
+gpu: false
 port: 8000

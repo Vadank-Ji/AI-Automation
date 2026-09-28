@@ -4,108 +4,123 @@
   hosts: ai_servers
   gather_facts: false
 
-  tasks:
+  vars:
+    project_dir: "{{ playbook_dir }}/.."
+    scripts_dir: "{{ project_dir }}/scripts"
+    config_path: "{{ project_dir }}/config/app_config.yml"
+    backups_dir: "{{ project_dir }}/config/backups"
 
-    - name: Check Current AI Service Health
-      command:
-        cmd: python3 ../scripts/health_check.py
+  tasks:
+    - name: Check current AI service health with Groq
+      ansible.builtin.command:
+        cmd: python3 ai_service.py --health
+        chdir: "{{ scripts_dir }}"
       register: initial_health
       changed_when: false
       failed_when: false
 
-    - name: Display Current Health
-      debug:
-        msg: "{{ initial_health.stdout }}"
-
     - name: Stop deployment if current service is unhealthy
-      fail:
-        msg: "Current AI service is unhealthy. Deployment stopped before upgrade."
+      ansible.builtin.fail:
+        msg: "Current AI service is unhealthy: {{ initial_health.stdout }}"
       when: initial_health.rc != 0
 
-    - name: Check for latest approved AI Model
-      command:
-        cmd: python3 ../scripts/model_checker.py
+    - name: Check for latest approved AI model
+      ansible.builtin.command:
+        cmd: python3 model_checker.py
+        chdir: "{{ scripts_dir }}"
       register: model_checker
       changed_when: false
 
     - name: Parse model checker result
-      set_fact:
+      ansible.builtin.set_fact:
         model_info: "{{ model_checker.stdout | from_json }}"
 
-    - name: Display Current Model
-      debug:
-        msg: "Current Model: {{ model_info.current_model }}"
+    - name: Create configuration backup directory
+      ansible.builtin.file:
+        path: "{{ backups_dir }}"
+        state: directory
+        mode: "0755"
+      when: model_info.update_available
 
-    - name: Backup AI Configuration
-      copy:
-        src: ../config/app_config.yml
-        dest: "../config/backups/app_config_{{ model_info.current_model }}.yml.bak"
+    - name: Backup working AI configuration
+      ansible.builtin.copy:
+        src: "{{ config_path }}"
+        dest: "{{ backups_dir }}/app_config_{{ model_info.current_model | regex_replace('[^A-Za-z0-9_.-]', '_') }}.yml.bak"
+        remote_src: true
+        mode: "0644"
       when: model_info.update_available
 
     - name: Replace AI model
       ansible.builtin.replace:
-        path: ../config/app_config.yml
+        path: "{{ config_path }}"
         regexp: "^model:.*$"
         replace: "model: {{ model_info.latest_model }}"
       when: model_info.update_available
       notify: Restart AI Service
 
-    - name: Apply restart before health check
-      meta: flush_handlers
+    - name: Restart service after model upgrade
+      ansible.builtin.meta: flush_handlers
+      when: model_info.update_available
 
-    - name: Check AI Service Health After Upgrade
-      command:
-        cmd: python3 ../scripts/health_check.py
-      register: health_check
+    - name: Check upgraded model with a real Groq request
+      ansible.builtin.command:
+        cmd: python3 ai_service.py --health
+        chdir: "{{ scripts_dir }}"
+      register: upgrade_health
       changed_when: false
       failed_when: false
+      when: model_info.update_available
 
-    - name: Display Health Status
-      debug:
-        msg: "{{ health_check.stdout }}"
-
-    - name: Rollback configuration after failed upgrade
-      copy:
-        src: "../config/backups/app_config_{{ model_info.current_model }}.yml.bak"
-        dest: "../config/app_config.yml"
+    - name: Restore last working configuration after failed upgrade
+      ansible.builtin.copy:
+        src: "{{ backups_dir }}/app_config_{{ model_info.current_model | regex_replace('[^A-Za-z0-9_.-]', '_') }}.yml.bak"
+        dest: "{{ config_path }}"
+        mode: "0644"
       when:
         - model_info.update_available
-        - health_check.rc != 0
+        - upgrade_health.rc != 0
       notify: Restart AI Service
 
-    - name: Apply rollback restart
-      meta: flush_handlers
+    - name: Restart service after rollback
+      ansible.builtin.meta: flush_handlers
       when:
         - model_info.update_available
-        - health_check.rc != 0
+        - upgrade_health.rc != 0
 
-    - name: Verify service after rollback
-      command:
-        cmd: python3 ../scripts/health_check.py
+    - name: Verify rollback model with a real Groq request
+      ansible.builtin.command:
+        cmd: python3 ai_service.py --health
+        chdir: "{{ scripts_dir }}"
       register: rollback_health
       changed_when: false
       failed_when: false
       when:
         - model_info.update_available
-        - health_check.rc != 0
+        - upgrade_health.rc != 0
 
-    - name: Display Rollback Health
-      debug:
-        msg: "{{ rollback_health.stdout }}"
+    - name: Fail only when the rollback health check also fails
+      ansible.builtin.fail:
+        msg: >-
+          Upgrade to {{ model_info.latest_model }} failed and rollback to
+          {{ model_info.current_model }} also failed. Upgrade result:
+          {{ upgrade_health.stdout }}. Rollback result: {{ rollback_health.stdout }}
       when:
         - model_info.update_available
-        - health_check.rc != 0
-
-    - name: Fail deployment if rollback also failed
-      fail:
-        msg: "Upgrade failed and rollback health check also failed!"
-      when:
-        - model_info.update_available
-        - health_check.rc != 0
+        - upgrade_health.rc != 0
         - rollback_health.rc != 0
 
-  handlers:
+    - name: Report successful rollback
+      ansible.builtin.debug:
+        msg: >-
+          Upgrade to {{ model_info.latest_model }} failed, but configuration
+          was restored to {{ model_info.current_model }} and passed health.
+      when:
+        - model_info.update_available
+        - upgrade_health.rc != 0
+        - rollback_health.rc == 0
 
+  handlers:
     - name: Restart AI Service
-      debug:
-        msg: "AI Service Restarted with New model!"
+      ansible.builtin.command:
+        cmd: ./restart_service.sh
+        chdir: "{{ scripts_dir }}"

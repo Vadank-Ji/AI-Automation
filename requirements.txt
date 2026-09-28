@@ -1,0 +1,5 @@
+ansible>=2.15,<13
+groq>=0.11,<1
+PyYAML>=6.0,<7
+python-dotenv>=1.0,<2
+requests>=2.31,<3

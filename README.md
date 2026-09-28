@@ -6,9 +6,15 @@ Ansible project for deploying and checking an AI service configuration.
 
 - Ansible
 - Python 3
-- Python packages: `PyYAML` and `requests`
+- Python packages: `groq`, `python-dotenv`, `PyYAML`, and `requests`
 
-For model discovery, set `OPENAI_API_KEY` in `scripts/.env` or in the shell environment. The local `.env` file is ignored by Git and must not be committed.
+Install Python dependencies with:
+
+```bash
+python3 -m pip install -r requirements.txt
+```
+
+Set `GROQ_API_KEY` in `scripts/.env`. The local `.env` file is ignored by Git and must not be committed.
 
 ## Layout
 
@@ -21,6 +27,15 @@ For model discovery, set `OPENAI_API_KEY` in `scripts/.env` or in the shell envi
 
 ```bash
 ansible-playbook -i inventory/hosts.ini playbooks/deploy.yml
-python3 scripts/model_checker.py
-python3 scripts/health_check.py
+python3 scripts/ai_service.py
+python3 scripts/ai_service.py --health
+scripts/restart_service.sh
 ```
+
+`--health` sends a real request to the model in `config/app_config.yml` and
+returns exit code `0` only when Groq responds successfully. The deployment
+playbook uses that check after an applicable model update; on failure it
+restores the backed-up configuration, restarts the service, and verifies the
+previous model before failing the deployment. The restart helper runs the
+service's periodic health monitor in the background and records output in
+`logs/ai_service.log`.

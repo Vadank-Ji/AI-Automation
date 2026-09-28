@@ -1,69 +1,42 @@
 import os
 import requests
-import sys
-import json
-from datetime import datetime, timezone
 from dotenv import load_dotenv
-import re
 
-load_dotenv()
+# --------------------------------------------------
+# Paths
+# --------------------------------------------------
 
-API_URL = "https://api.openai.com/v1/models"
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+ENV_PATH = os.path.join(SCRIPT_DIR, ".env")
 
-
-# Models belonging to specialized capabilities
-EXCLUDED_PATTERNS = [
-    "image",
-    "audio",
-    "realtime",
-    "transcribe",
-    "tts",
-    "embedding",
-    "moderation",
-    "search",
-    "codex",
-    "deep-research",
-    "computer-use",
-    "live"
-]
+load_dotenv(ENV_PATH)
 
 
-def is_eligible_model(model):
+# --------------------------------------------------
+# Groq API configuration
+# --------------------------------------------------
 
-    model_id = model["id"].lower()
+API_URL = "https://api.groq.com/openai/v1/models"
 
-    # Only consider GPT models
-    if not model_id.startswith("gpt-"):
-        return False
+api_key = os.getenv("GROQ_API_KEY")
 
-    # Exclude specialized models
-    for pattern in EXCLUDED_PATTERNS:
-        if pattern in model_id:
-            return False
+if not api_key:
+    raise ValueError(
+        "GROQ_API_KEY not found. "
+        "Make sure it is inside scripts/.env"
+    )
 
-    # Exclude preview models
-    if "preview" in model_id:
-        return False
-
-    # Exclude models that have a shutdown date
-    if model.get("shutdown_date"):
-        return False
-    if re.search(r"-\d{4}-\d{2}-\d{2}$", model_id):
-        return False
-
-    return True
+headers = {
+    "Authorization": f"Bearer {api_key}",
+    "Content-Type": "application/json"
+}
 
 
-def get_available_models():
+# --------------------------------------------------
+# Get models from Groq
+# --------------------------------------------------
 
-    api_key = os.getenv("OPENAI_API_KEY")
-
-    if not api_key:
-        raise RuntimeError("OPENAI_API_KEY is not set")
-
-    headers = {
-        "Authorization": f"Bearer {api_key}"
-    }
+def get_models():
 
     response = requests.get(
         API_URL,
@@ -73,44 +46,165 @@ def get_available_models():
 
     response.raise_for_status()
 
-    return response.json()["data"]
+    data = response.json()
+
+    return data.get("data", [])
 
 
-try:
+# --------------------------------------------------
+# Filter models
+# --------------------------------------------------
 
-    models = get_available_models()
+def is_text_model(model):
 
-    eligible_models = [
-        model
-        for model in models
-        if is_eligible_model(model)
+    model_id = model.get("id", "").lower()
+
+    if not model_id:
+        return False
+
+    # Ignore audio / speech models
+    excluded_patterns = [
+        "whisper",
+        "audio",
+        "tts",
+        "transcribe",
+        "speech"
     ]
 
-    # Newer models are assumed to have a later creation timestamp
-    eligible_models.sort(
-        key=lambda model: model["created"],
-        reverse=True
-    )
+    for pattern in excluded_patterns:
 
-    result = {
-        "eligible_models": [
-            model["id"]
-            for model in eligible_models
-        ],
-        "latest_model": (
-            eligible_models[0]["id"]
-            if eligible_models
-            else None
+        if pattern in model_id:
+            return False
+
+    return True
+
+
+# --------------------------------------------------
+# Display models
+# --------------------------------------------------
+
+def display_models(models):
+
+    print()
+    print("=" * 65)
+    print("              GROQ MODEL DISCOVERY")
+    print("=" * 65)
+    print()
+
+    for index, model in enumerate(models, start=1):
+
+        model_id = model.get("id")
+        owner = model.get("owned_by", "Unknown")
+        context = model.get("context_window", "Unknown")
+
+        print(
+            f"{index}. {model_id}"
         )
-    }
 
-    print(json.dumps(result))
+        print(
+            f"   Owner: {owner}"
+        )
+
+        print(
+            f"   Context Window: {context}"
+        )
+
+        print()
 
 
-except Exception as e:
+# --------------------------------------------------
+# Select model
+# --------------------------------------------------
 
-    print(json.dumps({
-        "error": str(e)
-    }))
+def select_model(models):
 
-    sys.exit(1)
+    while True:
+
+        choice = input(
+            "Enter the number of the model you want to use: "
+        ).strip()
+
+        try:
+
+            index = int(choice)
+
+            if 1 <= index <= len(models):
+
+                selected = models[index - 1]
+
+                return selected["id"]
+
+            print(
+                f"Please enter a number between 1 and {len(models)}."
+            )
+
+        except ValueError:
+
+            print("Please enter a valid number.")
+
+
+# --------------------------------------------------
+# Main
+# --------------------------------------------------
+
+def main():
+
+    try:
+
+        models = get_models()
+
+        text_models = [
+            model
+            for model in models
+            if is_text_model(model)
+        ]
+
+        if not text_models:
+
+            print("No suitable text models were found.")
+            return
+
+        display_models(text_models)
+
+        selected_model = select_model(text_models)
+
+        print()
+        print("=" * 65)
+        print("MODEL SELECTED")
+        print("=" * 65)
+        print()
+        print(f"Model: {selected_model}")
+        print()
+
+        print(
+            "Put this model into config/app_config.yml:"
+        )
+
+        print()
+        print(f"model: {selected_model}")
+        print("temperature: 0.7")
+        print("gpu: false")
+        print("port: 8000")
+        print()
+
+    except requests.exceptions.HTTPError as e:
+
+        print()
+        print("Groq API Error:")
+        print(e)
+
+    except requests.exceptions.RequestException as e:
+
+        print()
+        print("Network Error:")
+        print(e)
+
+    except Exception as e:
+
+        print()
+        print("Error:")
+        print(e)
+
+
+if __name__ == "__main__":
+    main()

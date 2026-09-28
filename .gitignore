@@ -12,6 +12,8 @@ venv/
 # Runtime output
 logs/*
 !logs/.gitkeep
+scripts/*.log
+scripts/*.pid
 
 # Local editor and OS files
 .DS_Store
